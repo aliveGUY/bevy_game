@@ -76,19 +76,14 @@ fn interface_system(st: Res<MovementState>, mut q: Query<&mut Text, With<Movemen
     };
 }
 
-use std::f32::consts::TAU;
-
-fn update_heartbeat(time: Res<Time>, mut q: Query<&mut HeartbeatValue>) {
-    if let Ok(mut v) = q.get_single_mut() {
-        let min = 0.0;
-        let max = 100.0;
-
-        let t = time.elapsed_seconds();
-
-        let normalized = (f32::sin(t * TAU) + 1.0) * 0.5;
-
-        let value = min + normalized * (max - min);
-
-        v.0 = value as i32;
+fn update_heartbeat(st: Res<MovementState>, mut q: Query<&mut HeartbeatValue>) {
+    if !st.is_changed() {
+        return;
     }
+
+    let Ok(mut v) = q.get_single_mut() else {
+        return;
+    };
+
+    v.0 = st.velocity.y;
 }
