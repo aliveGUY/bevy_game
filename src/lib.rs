@@ -1,12 +1,17 @@
 mod systems;
+mod ui;
 
 use bevy::prelude::*;
-use systems::ScenePlugin;
+use systems::{ ScenePlugin, MovementState, movement_system };
+use ui::UiPlugin;
 
 pub fn run_app() {
     let mut app = App::new();
+    app.init_resource::<MovementState>();
     app.add_plugins(DefaultPlugins);
     app.add_plugins(ScenePlugin);
+    app.add_plugins(UiPlugin);
+    app.add_systems(Update, movement_system);
     app.run();
 }
 
