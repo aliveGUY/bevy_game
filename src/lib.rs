@@ -1,5 +1,13 @@
+mod systems;
+
+use bevy::prelude::*;
+use systems::ScenePlugin;
+
 pub fn run_app() {
-    println!("Hello, world!");
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins);
+    app.add_plugins(ScenePlugin);
+    app.run();
 }
 
 #[cfg(target_arch = "wasm32")]
