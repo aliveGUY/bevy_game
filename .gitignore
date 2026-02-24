@@ -1,0 +1,4 @@
+/target
+/web/assets
+/web/pkg
+Cargo.lock
