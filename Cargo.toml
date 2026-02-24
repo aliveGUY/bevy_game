@@ -7,6 +7,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+uuid = { version = "1.21.0", default-features = false, features = ["js"] }
 bevy = { version = "0.14", default-features = true }
 bevy_rapier3d = { version = "0.27", features = ["dim3"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
