@@ -2,17 +2,19 @@ mod systems;
 mod ui;
 
 use bevy::prelude::*;
-use systems::{ ScenePlugin, PlayerPlugin, MovementState, movement_system };
+use bevy_rapier3d::{ plugin::{ NoUserData, RapierPhysicsPlugin }, render::RapierDebugRenderPlugin };
+use systems::{ ScenePlugin, PlayerPlugin, MovementState };
 use ui::UiPlugin;
 
 pub fn run_app() {
     let mut app = App::new();
     app.init_resource::<MovementState>();
     app.add_plugins(DefaultPlugins);
+    app.add_plugins(RapierPhysicsPlugin::<NoUserData>::default());
+    app.add_plugins(RapierDebugRenderPlugin::default());
     app.add_plugins(ScenePlugin);
     app.add_plugins(UiPlugin);
     app.add_plugins(PlayerPlugin);
-    app.add_systems(Update, movement_system);
     app.run();
 }
 

@@ -28,7 +28,7 @@ fn setup_ui(mut commands: Commands) {
             },
             text: Text::from_section("Pressed: (none)", TextStyle {
                 font_size: 18.0,
-                color: Color::WHITE,
+                color: Color::BLACK,
                 ..default()
             }),
             ..default()

@@ -12,22 +12,32 @@ pub struct MovementState {
     pub accel_k: f32,
     pub decel_a: f32,
 
-    pub hard_turn_dot: f32, // e.g. -0.70  (135..225 starts around dot <= cos(135) = -0.707)
-    pub soft_turn_dot: f32, // e.g.  0.70  (45..135 starts around dot <= cos(45)  =  0.707)
+    pub hard_turn_dot: f32,
+    pub soft_turn_dot: f32,
 
-    pub soft_turn_speed_factor: f32, // 0.5
+    pub soft_turn_speed_factor: f32,
     pub stop_epsilon: f32,
 
-    // hard turn behavior
-    pub hard_turn_hold_time: f32, // 0.10
+    pub hard_turn_hold_time: f32,
     hard_turn_active: bool,
     hard_turn_timer: f32,
     pending_dir: Vec2,
 
-    // curve state
     accelerating: bool,
     t: f32,
     start_speed: f32,
+
+    // set by ground detection (player_system)
+    pub is_falling: bool,
+
+    // horizontal decay while falling
+    pub fall_decel: f32,
+
+    // ✅ NEW: vertical falling state (units/sec, negative down)
+    pub fall_vel_y: f32,
+
+    // ✅ NEW: gravity accel (units/sec^2, negative down)
+    pub gravity: f32,
 }
 
 impl Default for MovementState {
@@ -42,9 +52,6 @@ impl Default for MovementState {
             accel_k: 6.0,
             decel_a: 6.0,
 
-            // These correspond to actual angle bands:
-            // soft: dot <= cos(45°)  ~ 0.707  => 45..180 (we'll also gate with hard below)
-            // hard: dot <= cos(135°) ~ -0.707 => 135..225
             hard_turn_dot: -0.707,
             soft_turn_dot: 0.707,
 
@@ -59,6 +66,12 @@ impl Default for MovementState {
             accelerating: false,
             t: 0.0,
             start_speed: 0.0,
+
+            is_falling: false,
+            fall_decel: 20.0,
+
+            fall_vel_y: 0.0,
+            gravity: -30.0, // tune
         }
     }
 }
@@ -109,20 +122,61 @@ pub fn movement_system(
     mut st: ResMut<MovementState>
 ) {
     let dt = time.delta_seconds();
+
+    // terminal fall speed = 3x top move speed
+    let max_fall_speed = -3.0 * st.max_speed;
+
+    // ✅ FALLING MODE:
+    // - no new horizontal accel forces
+    // - smoothly decay existing horizontal speed to 0
+    // - integrate vertical fall velocity with gravity
+    if st.is_falling {
+        st.pressed = "Falling".to_string();
+
+        // horizontal decay
+        st.speed = (st.speed - st.fall_decel * dt).max(0.0);
+
+        if st.speed <= st.stop_epsilon {
+            st.speed = 0.0;
+            st.velocity = Vec2::ZERO;
+        } else {
+            let d = st.dir.normalize_or_zero();
+            st.velocity = d * st.speed;
+        }
+
+        // vertical accelerate down
+        st.fall_vel_y += st.gravity * dt;
+        if st.fall_vel_y < max_fall_speed {
+            st.fall_vel_y = max_fall_speed;
+        }
+
+        // prevent other logic while falling
+        st.accelerating = false;
+        st.t = 0.0;
+        st.start_speed = st.speed;
+        st.hard_turn_active = false;
+        st.hard_turn_timer = 0.0;
+        st.pending_dir = Vec2::ZERO;
+
+        return;
+    }
+
+    // ✅ GROUNDED MODE:
+    // reset vertical fall speed
+    st.fall_vel_y = 0.0;
+
+    // ---------------------------
+    // NORMAL MODE (your original logic)
+    // ---------------------------
     let desired_dir = read_input_dir(&keys);
     let has_input = desired_dir != Vec2::ZERO;
 
     st.pressed = direction_string(desired_dir);
 
-    // Use current movement direction only if actually moving
     let moving = st.speed > st.stop_epsilon;
     let current_dir = if moving { st.dir.normalize_or_zero() } else { Vec2::ZERO };
 
-    // ---------------------------
-    // HARD TURN ACTIVE (lock)
-    // ---------------------------
     if st.hard_turn_active {
-        // If player released input: cancel immediately and remain stopped
         if !has_input {
             st.hard_turn_active = false;
             st.hard_turn_timer = 0.0;
@@ -131,23 +185,18 @@ pub fn movement_system(
             st.speed = 0.0;
             st.velocity = Vec2::ZERO;
 
-            // Also kill curve so nothing "revives" speed later
             st.accelerating = false;
             st.t = 0.0;
             st.start_speed = 0.0;
-
             return;
         }
 
-        // Still holding some direction while locked
         st.pending_dir = desired_dir;
         st.hard_turn_timer += dt;
 
-        // Forced stop
         st.speed = 0.0;
         st.velocity = Vec2::ZERO;
 
-        // After hold time, allow movement in pending dir
         if st.hard_turn_timer >= st.hard_turn_hold_time {
             st.hard_turn_active = false;
             st.hard_turn_timer = 0.0;
@@ -155,29 +204,21 @@ pub fn movement_system(
             st.dir = st.pending_dir;
             restart_curve(&mut st, true);
         }
-
         return;
     }
 
-    // ---------------------------
-    // Turn detection (when moving)
-    // ---------------------------
     let mut soft_turn = false;
-
     if moving && has_input {
-        let dot = current_dir.dot(desired_dir); // both unit
+        let dot = current_dir.dot(desired_dir);
 
         if dot <= st.hard_turn_dot {
-            // HARD: instant stop + (maybe) lock if holding
             st.speed = 0.0;
             st.velocity = Vec2::ZERO;
 
-            // immediately reset curve so you don't "coast" via decel curve
             st.accelerating = false;
             st.t = 0.0;
             st.start_speed = 0.0;
 
-            // enter lock only if still holding
             st.hard_turn_active = true;
             st.hard_turn_timer = 0.0;
             st.pending_dir = desired_dir;
@@ -187,16 +228,10 @@ pub fn movement_system(
         }
     }
 
-    // ---------------------------
-    // Direction update
-    // ---------------------------
     if has_input {
         st.dir = desired_dir;
     }
 
-    // ---------------------------
-    // Curves
-    // ---------------------------
     restart_curve(&mut st, has_input);
     st.t += dt;
 
@@ -206,12 +241,10 @@ pub fn movement_system(
         st.start_speed * inv_square(st.t, st.decel_a)
     };
 
-    // SOFT TURN: drop speed by 50% immediately (your spec)
     if soft_turn {
         speed *= st.soft_turn_speed_factor;
     }
 
-    // Cleanup
     if !has_input && speed < st.stop_epsilon {
         speed = 0.0;
     }

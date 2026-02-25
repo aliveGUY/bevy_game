@@ -2,29 +2,53 @@ use bevy::{
     asset::LoadState,
     core_pipeline::Skybox,
     prelude::*,
-    render::render_resource::{ TextureViewDescriptor, TextureViewDimension },
+    render::render_resource::{TextureViewDescriptor, TextureViewDimension},
 };
+use bevy_rapier3d::prelude::*;
 
 pub struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (setup_camera, setup_light));
+        app.add_systems(Startup, (setup_light, setup_ground));
         app.add_systems(Update, attach_skybox);
     }
 }
 
-// store the handle right on the camera
 #[derive(Component)]
-struct SkyboxHandle(Handle<Image>);
+pub struct SkyboxHandle(pub Handle<Image>);
 
-fn setup_camera(mut commands: Commands, asset_server: Res<AssetServer>) {
+#[derive(Component)]
+pub struct Ground;
+
+fn setup_ground(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let ground_size = 10.0;
+    let ground_height = 1.0;
+
+    // Visual + physics ground
     commands.spawn((
-        Camera3dBundle {
-            transform: Transform::from_xyz(0.0, 0.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+        PbrBundle {
+            mesh: meshes.add(Mesh::from(Cuboid::new(
+                ground_size,
+                ground_height,
+                ground_size,
+            ))),
+            material: materials.add(Color::srgb(0.3, 0.5, 0.3)),
+            // top surface at y=0
+            transform: Transform::from_xyz(0.0, -ground_height / 2.0, 0.0),
             ..default()
         },
-        SkyboxHandle(asset_server.load("skybox/skybox.ktx2")),
+        Ground,
+        RigidBody::Fixed,
+        Collider::cuboid(
+            ground_size / 2.0,
+            ground_height / 2.0,
+            ground_size / 2.0,
+        ),
     ));
 }
 
@@ -32,21 +56,19 @@ fn attach_skybox(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut images: ResMut<Assets<Image>>,
-    cams: Query<(Entity, &SkyboxHandle), Without<Skybox>>
+    cams: Query<(Entity, &SkyboxHandle), Without<Skybox>>,
 ) {
     for (e, h) in &cams {
         if asset_server.load_state(&h.0) != LoadState::Loaded {
             continue;
         }
 
-        if let Some(img) = images.get_mut(&h.0) {
-            img.texture_view_descriptor = Some(TextureViewDescriptor {
-                dimension: Some(TextureViewDimension::Cube),
-                ..default()
-            });
-        } else {
-            continue;
-        }
+        let Some(img) = images.get_mut(&h.0) else { continue; };
+
+        img.texture_view_descriptor = Some(TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::Cube),
+            ..default()
+        });
 
         commands.entity(e).insert(Skybox {
             image: h.0.clone(),
