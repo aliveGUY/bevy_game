@@ -77,13 +77,6 @@ fn interface_system(st: Res<MovementState>, mut q: Query<&mut Text, With<Movemen
 }
 
 fn update_heartbeat(st: Res<MovementState>, mut q: Query<&mut HeartbeatValue>) {
-    if !st.is_changed() {
-        return;
-    }
-
-    let Ok(mut v) = q.get_single_mut() else {
-        return;
-    };
-
-    v.0 = st.velocity.y;
+    let Ok(mut hb) = q.get_single_mut() else { return; };
+    hb.0 = st.velocity.length();
 }

@@ -2,7 +2,7 @@ mod systems;
 mod ui;
 
 use bevy::prelude::*;
-use systems::{ ScenePlugin, MovementState, movement_system };
+use systems::{ ScenePlugin, PlayerPlugin, MovementState, movement_system };
 use ui::UiPlugin;
 
 pub fn run_app() {
@@ -11,6 +11,7 @@ pub fn run_app() {
     app.add_plugins(DefaultPlugins);
     app.add_plugins(ScenePlugin);
     app.add_plugins(UiPlugin);
+    app.add_plugins(PlayerPlugin);
     app.add_systems(Update, movement_system);
     app.run();
 }
