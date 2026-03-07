@@ -26,7 +26,7 @@ fn setup_ground(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let ground_size = 10.0;
+    let ground_size = 30.0;
     let ground_height = 1.0;
 
     // Visual + physics ground

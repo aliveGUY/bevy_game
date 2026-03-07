@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+use crate::systems::ThirdPersonCamera;
+
 #[derive(Resource)]
 pub struct MovementState {
     pub pressed: String,
@@ -95,8 +97,9 @@ fn restart_curve(st: &mut MovementState, accelerating: bool) {
     }
 }
 
-fn read_input_dir(keys: &ButtonInput<KeyCode>) -> Vec2 {
+fn read_input_dir(keys: &ButtonInput<KeyCode>, camera_transform: &Transform) -> Vec2 {
     let mut raw = Vec2::ZERO;
+
     if keys.pressed(KeyCode::KeyW) {
         raw.y += 1.0;
     }
@@ -109,16 +112,27 @@ fn read_input_dir(keys: &ButtonInput<KeyCode>) -> Vec2 {
     if keys.pressed(KeyCode::KeyA) {
         raw.x -= 1.0;
     }
-    if raw.length_squared() > 0.0 {
-        raw.normalize()
-    } else {
-        Vec2::ZERO
+
+    if raw == Vec2::ZERO {
+        return Vec2::ZERO;
     }
+
+    let raw = raw.normalize();
+
+    let forward3 = camera_transform.forward();
+    let right3 = camera_transform.right();
+
+    let forward = Vec2::new(forward3.x, forward3.z).normalize_or_zero();
+    let right = Vec2::new(right3.x, right3.z).normalize_or_zero();
+
+    let world = forward * raw.y + right * raw.x;
+    world.normalize_or_zero()
 }
 
 pub fn movement_system(
-    time: Res<Time>,
+    time: Res<Time<Fixed>>,
     keys: Res<ButtonInput<KeyCode>>,
+    cam_q: Query<&Transform, With<ThirdPersonCamera>>,
     mut st: ResMut<MovementState>
 ) {
     let dt = time.delta_seconds();
@@ -168,7 +182,11 @@ pub fn movement_system(
     // ---------------------------
     // NORMAL MODE (your original logic)
     // ---------------------------
-    let desired_dir = read_input_dir(&keys);
+    let desired_dir = if let Ok(cam_t) = cam_q.get_single() {
+        read_input_dir(&keys, cam_t)
+    } else {
+        Vec2::ZERO
+    };
     let has_input = desired_dir != Vec2::ZERO;
 
     st.pressed = direction_string(desired_dir);
