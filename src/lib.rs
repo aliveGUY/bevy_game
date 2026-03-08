@@ -2,8 +2,11 @@ mod systems;
 mod ui;
 
 use bevy::prelude::*;
-use bevy_rapier3d::{ plugin::{ NoUserData, RapierPhysicsPlugin }, render::RapierDebugRenderPlugin };
-use systems::{ ScenePlugin, PlayerPlugin, ThirdPersonCameraPlugin, MovementState };
+use bevy_rapier3d::{
+    plugin::{NoUserData, RapierPhysicsPlugin},
+    render::RapierDebugRenderPlugin,
+};
+use systems::{MovementState, PlayerPlugin, ScenePlugin, ThirdPersonCameraPlugin};
 use ui::UiPlugin;
 
 pub fn run_app() {

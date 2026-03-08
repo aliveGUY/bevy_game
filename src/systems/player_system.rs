@@ -1,11 +1,11 @@
-use bevy::prelude::*;
+use bevy::{ animation::graph::{ AnimationGraph, AnimationNodeIndex }, prelude::* };
 use bevy_rapier3d::prelude::*;
 
 use crate::systems::{ movement_system, Ground, MovementState };
 
 const PLAYER_HALF_HEIGHT: f32 = 0.5;
 
-// Footprint “sensor” (fall only when whole footprint is off the edge)
+// Footprint sensor
 const FOOT_HALF_X: f32 = 0.3;
 const FOOT_HALF_Z: f32 = 0.3;
 const FOOT_HALF_Y: f32 = 0.03;
@@ -15,7 +15,15 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<PlayerAnimations>();
+        app.init_resource::<CurrentPlayerAnimation>();
+
         app.add_systems(Startup, setup_player);
+
+        app.add_systems(Update, (
+            bind_animation_graph_to_players,
+            update_player_animation.after(bind_animation_graph_to_players),
+        ));
 
         app.add_systems(FixedUpdate, (
             update_grounded_flag_and_snap,
@@ -28,21 +36,108 @@ impl Plugin for PlayerPlugin {
 #[derive(Component)]
 pub struct Player;
 
-pub fn setup_player(
+#[derive(Resource)]
+pub struct PlayerAnimations {
+    pub graph: Handle<AnimationGraph>,
+    pub idle: AnimationNodeIndex,
+    pub walk: AnimationNodeIndex,
+}
+
+impl FromWorld for PlayerAnimations {
+    fn from_world(world: &mut World) -> Self {
+        let idle_clip: Handle<AnimationClip> = {
+            let asset_server = world.resource::<AssetServer>();
+            asset_server.load("map/dummy.glb#Animation0")
+        };
+
+        let walk_clip: Handle<AnimationClip> = {
+            let asset_server = world.resource::<AssetServer>();
+            asset_server.load("map/dummy.glb#Animation1")
+        };
+
+        let mut graph = AnimationGraph::new();
+        let idle = graph.add_clip(idle_clip, 1.0, graph.root);
+        let walk = graph.add_clip(walk_clip, 1.0, graph.root);
+
+        let graph_handle = {
+            let mut graphs = world.resource_mut::<Assets<AnimationGraph>>();
+            graphs.add(graph)
+        };
+
+        Self {
+            graph: graph_handle,
+            idle,
+            walk,
+        }
+    }
+}
+
+#[derive(Resource, Default, PartialEq, Eq, Clone, Copy)]
+pub enum CurrentPlayerAnimation {
+    #[default]
+    None,
+    Idle,
+    Walk,
+}
+
+pub fn setup_player(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands
+        .spawn((
+            SpatialBundle {
+                transform: Transform::from_xyz(0.0, 2.0, 0.0),
+                ..default()
+            },
+            Player,
+        ))
+        .with_children(|parent| {
+            parent.spawn(SceneBundle {
+                scene: asset_server.load("map/dummy.glb#Scene0"),
+                transform: Transform::default(),
+                ..default()
+            });
+        });
+}
+
+pub fn bind_animation_graph_to_players(
+    animations: Res<PlayerAnimations>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>
+    players: Query<Entity, Added<AnimationPlayer>>
 ) {
-    // Start above where ground likely is; ground snap will correct on first tick.
-    commands.spawn((
-        PbrBundle {
-            mesh: meshes.add(Mesh::from(Cuboid::new(1.0, 1.0, 1.0))),
-            material: materials.add(Color::srgb(0.8, 0.8, 0.9)),
-            transform: Transform::from_xyz(0.0, 2.0, 0.0),
-            ..default()
-        },
-        Player,
-    ));
+    for entity in &players {
+        commands.entity(entity).insert(animations.graph.clone());
+    }
+}
+
+pub fn update_player_animation(
+    st: Res<MovementState>,
+    animations: Res<PlayerAnimations>,
+    mut current: ResMut<CurrentPlayerAnimation>,
+    mut players: Query<&mut AnimationPlayer>
+) {
+    let desired = if st.velocity.length_squared() > 0.0001 && !st.is_falling {
+        CurrentPlayerAnimation::Walk
+    } else {
+        CurrentPlayerAnimation::Idle
+    };
+
+    if *current == desired {
+        return;
+    }
+
+    let node = match desired {
+        CurrentPlayerAnimation::Idle => animations.idle,
+        CurrentPlayerAnimation::Walk => animations.walk,
+        CurrentPlayerAnimation::None => {
+            return;
+        }
+    };
+
+    for mut player in &mut players {
+        player.stop_all();
+        player.play(node).repeat();
+    }
+
+    *current = desired;
 }
 
 pub fn apply_player_motion(
@@ -69,9 +164,6 @@ pub fn apply_player_motion(
     }
 }
 
-/// 1) Detect grounded by footprint intersection vs Ground.
-/// 2) If grounded: snap player y to Ground top surface + PLAYER_HALF_HEIGHT.
-///    This removes the need for any constant GROUND_Y.
 pub fn update_grounded_flag_and_snap(
     rapier: Res<RapierContext>,
     mut st: ResMut<MovementState>,
