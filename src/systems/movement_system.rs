@@ -2,20 +2,44 @@ use bevy::prelude::*;
 
 use crate::systems::ThirdPersonCamera;
 
+/// Maximum running speed.
 const RUN_SPEED: f32 = 6.0;
+
+/// Maximum walking speed.
 const WALK_SPEED: f32 = 3.0;
-const RUN_TO_WALK_DURATION: f32 = 0.25;
+
+/// Time to reach the target speed during acceleration.
+const ACCELERATION_DURATION: f32 = 0.5;
+
+/// Shape strength of the acceleration curve.
+/// Higher values make the start more aggressive.
+const ACCELERATION_CURVE_STRENGTH: f32 = 6.0;
+
+/// Time to smoothly decelerate from run speed down to walk speed.
+const RUN_TO_WALK_DURATION: f32 = 0.5;
+
+/// Shape of the run-to-walk deceleration curve.
+/// 1.0 = linear, 2.0 = quadratic-like.
 const RUN_TO_WALK_CURVATURE: f32 = 2.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerState {
+    Idle,
+    Accelerating,
+    Walking,
+    Running,
+    Decelerating,
+}
 
 #[derive(Resource)]
 pub struct MovementState {
     pub pressed: String,
 
+    pub state: PlayerState,
+
     pub dir: Vec2,
     pub velocity: Vec2,
     pub speed: f32,
-
-    pub accel_k: f32,
 
     pub is_run_to_walk_decelerating: bool,
     pub run_to_walk_t: f32,
@@ -45,12 +69,13 @@ pub struct MovementState {
 impl Default for MovementState {
     fn default() -> Self {
         Self {
-            pressed: String::new(),
+            pressed: String::from("Idle"),
+
+            state: PlayerState::Idle,
+
             dir: Vec2::Y,
             velocity: Vec2::ZERO,
             speed: 0.0,
-
-            accel_k: 6.0,
 
             is_run_to_walk_decelerating: false,
             run_to_walk_t: 0.0,
@@ -81,8 +106,20 @@ impl Default for MovementState {
 }
 
 #[inline]
-fn acceleration_function(t: f32, k: f32) -> f32 {
-    1.0 - (-k * t.max(0.0)).exp()
+fn acceleration_function(t: f32, duration: f32, curve_strength: f32) -> f32 {
+    if duration <= 0.0 {
+        return 1.0;
+    }
+
+    let u = (t / duration).clamp(0.0, 1.0);
+    let raw = 1.0 - (-curve_strength * u).exp();
+    let max_raw = 1.0 - (-curve_strength).exp();
+
+    if max_raw <= f32::EPSILON {
+        1.0
+    } else {
+        raw / max_raw
+    }
 }
 
 #[inline]
@@ -147,6 +184,22 @@ fn read_input_dir(keys: &ButtonInput<KeyCode>, camera_transform: &Transform) -> 
     world.normalize_or_zero()
 }
 
+fn player_state_string(state: PlayerState) -> String {
+    match state {
+        PlayerState::Idle => "Idle".to_string(),
+        PlayerState::Accelerating => "Accelerating".to_string(),
+        PlayerState::Walking => "Walking".to_string(),
+        PlayerState::Running => "Running".to_string(),
+        PlayerState::Decelerating => "Decelerating".to_string(),
+    }
+}
+
+#[inline]
+fn set_player_state(st: &mut MovementState, state: PlayerState) {
+    st.state = state;
+    st.pressed = player_state_string(state);
+}
+
 pub fn movement_system(
     time: Res<Time<Fixed>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -158,16 +211,16 @@ pub fn movement_system(
     let max_fall_speed = -3.0 * RUN_SPEED;
 
     if st.is_falling {
-        st.pressed = "Falling".to_string();
-
         st.speed = (st.speed - st.fall_decel * dt).max(0.0);
 
         if st.speed <= st.stop_epsilon {
             st.speed = 0.0;
             st.velocity = Vec2::ZERO;
+            set_player_state(&mut st, PlayerState::Idle);
         } else {
             let d = st.dir.normalize_or_zero();
             st.velocity = d * st.speed;
+            set_player_state(&mut st, PlayerState::Decelerating);
         }
 
         st.fall_vel_y += st.gravity * dt;
@@ -202,12 +255,6 @@ pub fn movement_system(
     let wants_run = has_input && shift_pressed(&keys);
     let target_speed = if wants_run { RUN_SPEED } else { WALK_SPEED };
 
-    st.pressed = if wants_run {
-        format!("Run {}", direction_string(desired_dir))
-    } else {
-        direction_string(desired_dir)
-    };
-
     let moving = st.speed > st.stop_epsilon;
     let current_dir = if moving { st.dir.normalize_or_zero() } else { Vec2::ZERO };
 
@@ -219,6 +266,7 @@ pub fn movement_system(
 
             st.speed = 0.0;
             st.velocity = Vec2::ZERO;
+            set_player_state(&mut st, PlayerState::Idle);
 
             st.accelerating = false;
             st.t = 0.0;
@@ -235,6 +283,7 @@ pub fn movement_system(
 
         st.speed = 0.0;
         st.velocity = Vec2::ZERO;
+        set_player_state(&mut st, PlayerState::Idle);
 
         if st.hard_turn_timer >= st.hard_turn_hold_time {
             st.hard_turn_active = false;
@@ -253,6 +302,7 @@ pub fn movement_system(
         if dot <= st.hard_turn_dot {
             st.speed = 0.0;
             st.velocity = Vec2::ZERO;
+            set_player_state(&mut st, PlayerState::Idle);
 
             st.accelerating = false;
             st.t = 0.0;
@@ -321,7 +371,12 @@ pub fn movement_system(
         restart_curve(&mut st, true);
         st.t += dt;
 
-        let alpha = acceleration_function(st.t, st.accel_k).clamp(0.0, 1.0);
+        let alpha = acceleration_function(
+            st.t,
+            ACCELERATION_DURATION,
+            ACCELERATION_CURVE_STRENGTH
+        ).clamp(0.0, 1.0);
+
         st.start_speed + (target_speed - st.start_speed) * alpha
     } else {
         0.0
@@ -339,27 +394,18 @@ pub fn movement_system(
 
     st.speed = speed;
     st.velocity = if speed > 0.0 { st.dir * speed } else { Vec2::ZERO };
-}
 
-fn direction_string(dir: Vec2) -> String {
-    if dir == Vec2::ZERO {
-        return "Idle".to_string();
-    }
+    let next_state = if st.is_run_to_walk_decelerating {
+        PlayerState::Decelerating
+    } else if !has_input || speed <= st.stop_epsilon {
+        PlayerState::Idle
+    } else if wants_run && speed < RUN_SPEED - st.stop_epsilon {
+        PlayerState::Accelerating
+    } else if wants_run {
+        PlayerState::Running
+    } else {
+        PlayerState::Walking
+    };
 
-    let mut parts = Vec::new();
-
-    if dir.y > 0.0 {
-        parts.push("Forward");
-    }
-    if dir.y < 0.0 {
-        parts.push("Backward");
-    }
-    if dir.x > 0.0 {
-        parts.push("Right");
-    }
-    if dir.x < 0.0 {
-        parts.push("Left");
-    }
-
-    parts.join(" ")
+    set_player_state(&mut st, next_state);
 }

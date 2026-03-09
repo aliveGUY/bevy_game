@@ -1,7 +1,7 @@
-use bevy::{ animation::graph::{ AnimationGraph, AnimationNodeIndex }, prelude::* };
+use bevy::{ animation::graph::{ AnimationGraph, AnimationNodeIndex }, gltf::Gltf, prelude::* };
 use bevy_rapier3d::prelude::*;
 
-use crate::systems::{ movement_system, Ground, MovementState };
+use crate::systems::{ movement_system, Ground, MovementState, PlayerState };
 
 const PLAYER_HALF_HEIGHT: f32 = 0.5;
 
@@ -10,6 +10,13 @@ const FOOT_HALF_X: f32 = 0.3;
 const FOOT_HALF_Z: f32 = 0.3;
 const FOOT_HALF_Y: f32 = 0.03;
 const FOOT_BELOW_FEET: f32 = 0.01;
+
+// GLTF animation names from Blender.
+const IDLE_ANIMATION_NAME: &str = "Idle";
+const WALK_ANIMATION_NAME: &str = "Walk";
+const RUN_ANIMATION_NAME: &str = "Run";
+const ACCELERATION_ANIMATION_NAME: &str = "Acceleration";
+const DECELERATION_ANIMATION_NAME: &str = "Decelaration";
 
 pub struct PlayerPlugin;
 
@@ -21,7 +28,8 @@ impl Plugin for PlayerPlugin {
         app.add_systems(Startup, setup_player);
 
         app.add_systems(Update, (
-            bind_animation_graph_to_players,
+            initialize_player_animations_once,
+            bind_animation_graph_to_players.after(initialize_player_animations_once),
             update_player_animation.after(bind_animation_graph_to_players),
         ));
 
@@ -36,51 +44,36 @@ impl Plugin for PlayerPlugin {
 #[derive(Component)]
 pub struct Player;
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct PlayerAnimations {
-    pub graph: Handle<AnimationGraph>,
-    pub idle: AnimationNodeIndex,
-    pub walk: AnimationNodeIndex,
+    pub gltf: Handle<Gltf>,
+    pub graph: Option<Handle<AnimationGraph>>,
+    pub idle: Option<AnimationNodeIndex>,
+    pub walk: Option<AnimationNodeIndex>,
+    pub run: Option<AnimationNodeIndex>,
+    pub acceleration: Option<AnimationNodeIndex>,
+    pub deceleration: Option<AnimationNodeIndex>,
+    pub initialized: bool,
+    pub warned_missing_required: bool,
 }
 
-impl FromWorld for PlayerAnimations {
-    fn from_world(world: &mut World) -> Self {
-        let idle_clip: Handle<AnimationClip> = {
-            let asset_server = world.resource::<AssetServer>();
-            asset_server.load("map/dummy.glb#Animation0")
-        };
-
-        let walk_clip: Handle<AnimationClip> = {
-            let asset_server = world.resource::<AssetServer>();
-            asset_server.load("map/dummy.glb#Animation1")
-        };
-
-        let mut graph = AnimationGraph::new();
-        let idle = graph.add_clip(idle_clip, 1.0, graph.root);
-        let walk = graph.add_clip(walk_clip, 1.0, graph.root);
-
-        let graph_handle = {
-            let mut graphs = world.resource_mut::<Assets<AnimationGraph>>();
-            graphs.add(graph)
-        };
-
-        Self {
-            graph: graph_handle,
-            idle,
-            walk,
-        }
-    }
-}
-
-#[derive(Resource, Default, PartialEq, Eq, Clone, Copy)]
+#[derive(Resource, Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum CurrentPlayerAnimation {
     #[default]
-    None,
     Idle,
     Walk,
+    Run,
+    Acceleration,
+    Deceleration,
 }
 
-pub fn setup_player(mut commands: Commands, asset_server: Res<AssetServer>) {
+pub fn setup_player(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut animations: ResMut<PlayerAnimations>
+) {
+    animations.gltf = asset_server.load("map/dummy.glb");
+
     commands
         .spawn((
             SpatialBundle {
@@ -98,13 +91,94 @@ pub fn setup_player(mut commands: Commands, asset_server: Res<AssetServer>) {
         });
 }
 
+pub fn initialize_player_animations_once(
+    mut animations: ResMut<PlayerAnimations>,
+    gltfs: Res<Assets<Gltf>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>
+) {
+    if animations.initialized {
+        return;
+    }
+
+    let Some(gltf) = gltfs.get(&animations.gltf) else {
+        return;
+    };
+
+    let mut graph = AnimationGraph::new();
+
+    let mut idle = None;
+    let mut walk = None;
+    let mut run = None;
+    let mut acceleration = None;
+    let mut deceleration = None;
+
+    for (name, clip_handle) in &gltf.named_animations {
+        info!("GLTF animation found: '{}'", name);
+
+        match name.as_ref() {
+            IDLE_ANIMATION_NAME => {
+                idle = Some(graph.add_clip(clip_handle.clone(), 1.0, graph.root));
+            }
+            WALK_ANIMATION_NAME => {
+                walk = Some(graph.add_clip(clip_handle.clone(), 1.0, graph.root));
+            }
+            RUN_ANIMATION_NAME => {
+                run = Some(graph.add_clip(clip_handle.clone(), 1.0, graph.root));
+            }
+            ACCELERATION_ANIMATION_NAME => {
+                acceleration = Some(graph.add_clip(clip_handle.clone(), 1.0, graph.root));
+            }
+            DECELERATION_ANIMATION_NAME => {
+                deceleration = Some(graph.add_clip(clip_handle.clone(), 1.0, graph.root));
+            }
+            other => {
+                warn!("Unexpected animation found in GLTF: '{}'", other);
+            }
+        }
+    }
+
+    if !animations.warned_missing_required {
+        if idle.is_none() {
+            warn!("Missing required animation '{}'.", IDLE_ANIMATION_NAME);
+        }
+        if walk.is_none() {
+            warn!("Missing required animation '{}'.", WALK_ANIMATION_NAME);
+        }
+        if run.is_none() {
+            warn!("Missing required animation '{}'.", RUN_ANIMATION_NAME);
+        }
+        if acceleration.is_none() {
+            warn!("Missing required animation '{}'.", ACCELERATION_ANIMATION_NAME);
+        }
+        if deceleration.is_none() {
+            warn!("Missing required animation '{}'.", DECELERATION_ANIMATION_NAME);
+        }
+    }
+
+    animations.warned_missing_required = true;
+
+    let graph_handle = graphs.add(graph);
+
+    animations.graph = Some(graph_handle);
+    animations.idle = idle;
+    animations.walk = walk;
+    animations.run = run;
+    animations.acceleration = acceleration;
+    animations.deceleration = deceleration;
+    animations.initialized = true;
+}
+
 pub fn bind_animation_graph_to_players(
     animations: Res<PlayerAnimations>,
     mut commands: Commands,
-    players: Query<Entity, Added<AnimationPlayer>>
+    players: Query<Entity, (Added<AnimationPlayer>, Without<Handle<AnimationGraph>>)>
 ) {
+    let Some(graph) = animations.graph.clone() else {
+        return;
+    };
+
     for entity in &players {
-        commands.entity(entity).insert(animations.graph.clone());
+        commands.entity(entity).insert(graph.clone());
     }
 }
 
@@ -114,11 +188,17 @@ pub fn update_player_animation(
     mut current: ResMut<CurrentPlayerAnimation>,
     mut players: Query<&mut AnimationPlayer>
 ) {
-    let desired = if st.velocity.length_squared() > 0.0001 && !st.is_falling {
-        CurrentPlayerAnimation::Walk
-    } else {
-        CurrentPlayerAnimation::Idle
+    let desired = match st.state {
+        PlayerState::Idle => CurrentPlayerAnimation::Idle,
+        PlayerState::Accelerating => CurrentPlayerAnimation::Acceleration,
+        PlayerState::Walking => CurrentPlayerAnimation::Walk,
+        PlayerState::Running => CurrentPlayerAnimation::Run,
+        PlayerState::Decelerating => CurrentPlayerAnimation::Deceleration,
     };
+
+    if *current != desired {
+        info!("Animation transition: {:?} -> {:?}", *current, desired);
+    }
 
     if *current == desired {
         return;
@@ -127,9 +207,14 @@ pub fn update_player_animation(
     let node = match desired {
         CurrentPlayerAnimation::Idle => animations.idle,
         CurrentPlayerAnimation::Walk => animations.walk,
-        CurrentPlayerAnimation::None => {
-            return;
-        }
+        CurrentPlayerAnimation::Run => animations.run,
+        CurrentPlayerAnimation::Acceleration => animations.acceleration,
+        CurrentPlayerAnimation::Deceleration => animations.deceleration,
+    };
+
+    let Some(node) = node else {
+        warn!("Requested animation {:?}, but no matching clip was loaded.", desired);
+        return;
     };
 
     for mut player in &mut players {

@@ -5,3 +5,4 @@ cargo build --release --target wasm32-unknown-unknown --lib && wasm-bindgen --ta
 
 ## Artistic Physics
 - [Deceleration curve](https://www.desmos.com/calculator/isgmoemzoa)
+- [Acceleration curve](https://www.desmos.com/calculator/t6rrcwzyym)
