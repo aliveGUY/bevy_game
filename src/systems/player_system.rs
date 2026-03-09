@@ -1,4 +1,6 @@
-use bevy::{ animation::graph::{ AnimationGraph, AnimationNodeIndex }, gltf::Gltf, prelude::* };
+use std::time::Duration;
+
+use bevy::{ animation::graph::{ AnimationGraph, AnimationNodeIndex }, prelude::*, gltf::Gltf };
 use bevy_rapier3d::prelude::*;
 
 use crate::systems::{ movement_system, Ground, MovementState, PlayerState };
@@ -10,6 +12,9 @@ const FOOT_HALF_X: f32 = 0.3;
 const FOOT_HALF_Z: f32 = 0.3;
 const FOOT_HALF_Y: f32 = 0.03;
 const FOOT_BELOW_FEET: f32 = 0.01;
+
+// Animation blending
+const ANIMATION_BLEND_DURATION_SECS: f32 = 0.2;
 
 // GLTF animation names from Blender.
 const IDLE_ANIMATION_NAME: &str = "Idle";
@@ -171,14 +176,14 @@ pub fn initialize_player_animations_once(
 pub fn bind_animation_graph_to_players(
     animations: Res<PlayerAnimations>,
     mut commands: Commands,
-    players: Query<Entity, (Added<AnimationPlayer>, Without<Handle<AnimationGraph>>)>
+    players: Query<Entity, Added<AnimationPlayer>>
 ) {
     let Some(graph) = animations.graph.clone() else {
         return;
     };
 
     for entity in &players {
-        commands.entity(entity).insert(graph.clone());
+        commands.entity(entity).insert((graph.clone(), AnimationTransitions::new()));
     }
 }
 
@@ -186,7 +191,7 @@ pub fn update_player_animation(
     st: Res<MovementState>,
     animations: Res<PlayerAnimations>,
     mut current: ResMut<CurrentPlayerAnimation>,
-    mut players: Query<&mut AnimationPlayer>
+    mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>
 ) {
     let desired = match st.state {
         PlayerState::Idle => CurrentPlayerAnimation::Idle,
@@ -217,9 +222,10 @@ pub fn update_player_animation(
         return;
     };
 
-    for mut player in &mut players {
-        player.stop_all();
-        player.play(node).repeat();
+    let blend_duration = Duration::from_secs_f32(ANIMATION_BLEND_DURATION_SECS);
+
+    for (mut player, mut transitions) in &mut players {
+        transitions.play(&mut player, node, blend_duration).repeat();
     }
 
     *current = desired;
