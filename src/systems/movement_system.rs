@@ -2,6 +2,11 @@ use bevy::prelude::*;
 
 use crate::systems::ThirdPersonCamera;
 
+const RUN_SPEED: f32 = 6.0;
+const WALK_SPEED: f32 = 3.0;
+const RUN_TO_WALK_DURATION: f32 = 0.25;
+const RUN_TO_WALK_CURVATURE: f32 = 2.0;
+
 #[derive(Resource)]
 pub struct MovementState {
     pub pressed: String,
@@ -10,9 +15,11 @@ pub struct MovementState {
     pub velocity: Vec2,
     pub speed: f32,
 
-    pub max_speed: f32,
     pub accel_k: f32,
-    pub decel_a: f32,
+
+    pub is_run_to_walk_decelerating: bool,
+    pub run_to_walk_t: f32,
+    pub run_to_walk_start_speed: f32,
 
     pub hard_turn_dot: f32,
     pub soft_turn_dot: f32,
@@ -29,16 +36,9 @@ pub struct MovementState {
     t: f32,
     start_speed: f32,
 
-    // set by ground detection (player_system)
     pub is_falling: bool,
-
-    // horizontal decay while falling
     pub fall_decel: f32,
-
-    // ✅ NEW: vertical falling state (units/sec, negative down)
     pub fall_vel_y: f32,
-
-    // ✅ NEW: gravity accel (units/sec^2, negative down)
     pub gravity: f32,
 }
 
@@ -50,9 +50,11 @@ impl Default for MovementState {
             velocity: Vec2::ZERO,
             speed: 0.0,
 
-            max_speed: 6.0,
             accel_k: 6.0,
-            decel_a: 6.0,
+
+            is_run_to_walk_decelerating: false,
+            run_to_walk_t: 0.0,
+            run_to_walk_start_speed: 0.0,
 
             hard_turn_dot: -0.707,
             soft_turn_dot: 0.707,
@@ -73,19 +75,30 @@ impl Default for MovementState {
             fall_decel: 20.0,
 
             fall_vel_y: 0.0,
-            gravity: -30.0, // tune
+            gravity: -30.0,
         }
     }
 }
 
 #[inline]
-fn accel_exp(t: f32, k: f32) -> f32 {
+fn acceleration_function(t: f32, k: f32) -> f32 {
     1.0 - (-k * t.max(0.0)).exp()
 }
 
 #[inline]
-fn inv_square(t: f32, a: f32) -> f32 {
-    1.0 / (1.0 + a * t.max(0.0)).powi(2)
+fn deceleration_function(
+    t: f32,
+    start_speed: f32,
+    walk_speed: f32,
+    duration: f32,
+    curvature: f32
+) -> f32 {
+    if duration <= 0.0 {
+        return walk_speed;
+    }
+
+    let u = (t / duration).clamp(0.0, 1.0);
+    walk_speed + (start_speed - walk_speed) * (1.0 - u).powf(curvature.max(1.0))
 }
 
 #[inline]
@@ -95,6 +108,11 @@ fn restart_curve(st: &mut MovementState, accelerating: bool) {
         st.t = 0.0;
         st.start_speed = st.speed;
     }
+}
+
+#[inline]
+fn shift_pressed(keys: &ButtonInput<KeyCode>) -> bool {
+    keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)
 }
 
 fn read_input_dir(keys: &ButtonInput<KeyCode>, camera_transform: &Transform) -> Vec2 {
@@ -137,17 +155,11 @@ pub fn movement_system(
 ) {
     let dt = time.delta_seconds();
 
-    // terminal fall speed = 3x top move speed
-    let max_fall_speed = -3.0 * st.max_speed;
+    let max_fall_speed = -3.0 * RUN_SPEED;
 
-    // ✅ FALLING MODE:
-    // - no new horizontal accel forces
-    // - smoothly decay existing horizontal speed to 0
-    // - integrate vertical fall velocity with gravity
     if st.is_falling {
         st.pressed = "Falling".to_string();
 
-        // horizontal decay
         st.speed = (st.speed - st.fall_decel * dt).max(0.0);
 
         if st.speed <= st.stop_epsilon {
@@ -158,16 +170,19 @@ pub fn movement_system(
             st.velocity = d * st.speed;
         }
 
-        // vertical accelerate down
         st.fall_vel_y += st.gravity * dt;
         if st.fall_vel_y < max_fall_speed {
             st.fall_vel_y = max_fall_speed;
         }
 
-        // prevent other logic while falling
         st.accelerating = false;
         st.t = 0.0;
         st.start_speed = st.speed;
+
+        st.is_run_to_walk_decelerating = false;
+        st.run_to_walk_t = 0.0;
+        st.run_to_walk_start_speed = 0.0;
+
         st.hard_turn_active = false;
         st.hard_turn_timer = 0.0;
         st.pending_dir = Vec2::ZERO;
@@ -175,21 +190,23 @@ pub fn movement_system(
         return;
     }
 
-    // ✅ GROUNDED MODE:
-    // reset vertical fall speed
     st.fall_vel_y = 0.0;
 
-    // ---------------------------
-    // NORMAL MODE (your original logic)
-    // ---------------------------
     let desired_dir = if let Ok(cam_t) = cam_q.get_single() {
         read_input_dir(&keys, cam_t)
     } else {
         Vec2::ZERO
     };
-    let has_input = desired_dir != Vec2::ZERO;
 
-    st.pressed = direction_string(desired_dir);
+    let has_input = desired_dir != Vec2::ZERO;
+    let wants_run = has_input && shift_pressed(&keys);
+    let target_speed = if wants_run { RUN_SPEED } else { WALK_SPEED };
+
+    st.pressed = if wants_run {
+        format!("Run {}", direction_string(desired_dir))
+    } else {
+        direction_string(desired_dir)
+    };
 
     let moving = st.speed > st.stop_epsilon;
     let current_dir = if moving { st.dir.normalize_or_zero() } else { Vec2::ZERO };
@@ -206,6 +223,10 @@ pub fn movement_system(
             st.accelerating = false;
             st.t = 0.0;
             st.start_speed = 0.0;
+
+            st.is_run_to_walk_decelerating = false;
+            st.run_to_walk_t = 0.0;
+            st.run_to_walk_start_speed = 0.0;
             return;
         }
 
@@ -237,6 +258,10 @@ pub fn movement_system(
             st.t = 0.0;
             st.start_speed = 0.0;
 
+            st.is_run_to_walk_decelerating = false;
+            st.run_to_walk_t = 0.0;
+            st.run_to_walk_start_speed = 0.0;
+
             st.hard_turn_active = true;
             st.hard_turn_timer = 0.0;
             st.pending_dir = desired_dir;
@@ -250,20 +275,65 @@ pub fn movement_system(
         st.dir = desired_dir;
     }
 
-    restart_curve(&mut st, has_input);
-    st.t += dt;
+    let should_start_run_to_walk =
+        st.speed > WALK_SPEED + st.stop_epsilon &&
+        !st.is_run_to_walk_decelerating &&
+        ((has_input && !wants_run) || !has_input);
 
-    let mut speed = if st.accelerating {
-        st.max_speed * accel_exp(st.t, st.accel_k).clamp(0.0, 1.0)
+    if should_start_run_to_walk {
+        st.is_run_to_walk_decelerating = true;
+        st.run_to_walk_t = 0.0;
+        st.run_to_walk_start_speed = st.speed.min(RUN_SPEED);
+
+        st.accelerating = false;
+        st.t = 0.0;
+        st.start_speed = st.speed;
+    }
+
+    let mut speed = if st.is_run_to_walk_decelerating {
+        st.run_to_walk_t += dt;
+
+        let speed = deceleration_function(
+            st.run_to_walk_t,
+            st.run_to_walk_start_speed,
+            WALK_SPEED,
+            RUN_TO_WALK_DURATION,
+            RUN_TO_WALK_CURVATURE
+        );
+
+        let reached_walk =
+            st.run_to_walk_t >= RUN_TO_WALK_DURATION || speed <= WALK_SPEED + st.stop_epsilon;
+
+        if reached_walk {
+            st.is_run_to_walk_decelerating = false;
+            st.run_to_walk_t = 0.0;
+            st.run_to_walk_start_speed = 0.0;
+
+            if has_input {
+                WALK_SPEED
+            } else {
+                0.0
+            }
+        } else {
+            speed
+        }
+    } else if has_input {
+        restart_curve(&mut st, true);
+        st.t += dt;
+
+        let alpha = acceleration_function(st.t, st.accel_k).clamp(0.0, 1.0);
+        st.start_speed + (target_speed - st.start_speed) * alpha
     } else {
-        st.start_speed * inv_square(st.t, st.decel_a)
+        0.0
     };
 
     if soft_turn {
         speed *= st.soft_turn_speed_factor;
     }
 
-    if !has_input && speed < st.stop_epsilon {
+    speed = speed.clamp(0.0, RUN_SPEED);
+
+    if speed < st.stop_epsilon {
         speed = 0.0;
     }
 
@@ -275,7 +345,9 @@ fn direction_string(dir: Vec2) -> String {
     if dir == Vec2::ZERO {
         return "Idle".to_string();
     }
+
     let mut parts = Vec::new();
+
     if dir.y > 0.0 {
         parts.push("Forward");
     }
@@ -288,5 +360,6 @@ fn direction_string(dir: Vec2) -> String {
     if dir.x < 0.0 {
         parts.push("Left");
     }
+
     parts.join(" ")
 }
